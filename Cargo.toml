@@ -1,0 +1,16 @@
+[package]
+name = "snappywm"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+x11rb = {version = "0.11.1", features=["image","all-extensions", "allow-unsafe-code", "render"]}
+rgb = "0.8"
+
+image ="0.24.5"
+keycode = "0.4.0"
+[dependencies.cairo-rs]
+version = "0.16"
+features = ["xcb"]
