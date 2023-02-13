@@ -3,14 +3,14 @@ use std::borrow::Borrow;
 pub trait Layout {
     fn push(&mut self);
     fn pop(&mut self);
-    fn next_geom(&mut self) -> &Geom;
+    fn next_geom(&mut self) -> Geom;
     fn reset(&mut self);
 }
 pub struct RootParams {
     pub width: u16,
     pub height: u16,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Geom {
     pub width: u16,
     pub height: u16,
@@ -59,6 +59,7 @@ impl MasterSlave {
 }
 impl Layout for Spiral {
     fn reset(&mut self) {
+        self.cur = 0;
         self.geoms.clear();
         self.geoms.reserve(self.len);
         if self.len == 1 {
@@ -127,14 +128,14 @@ impl Layout for Spiral {
         self.len -= 1;
         self.reset();
     }
-    fn next_geom(&mut self) -> &Geom {
+    fn next_geom(&mut self) -> Geom {
         let cur = self.cur.clone();
         self.cur += 1;
         if self.cur == self.len {
             self.cur = 0;
         }
 
-        return self.geoms[cur].borrow();
+        return self.geoms[cur].clone();
     }
 }
 impl Layout for MasterSlave {
@@ -149,14 +150,16 @@ impl Layout for MasterSlave {
                 y: 0,
             });
         } else {
-            let delta = usize::from(self.rootheight);
-            let delta = delta / (self.len - 1);
+            let mut delta = usize::from(self.rootheight);
+            if self.len > 1 {
+                delta = delta / (self.len - 1);
+            }
             let delta = delta as u16;
             let len = self.len as u16;
             for i in 0..self.len {
                 if i == 0 {
                     self.geoms.push(Geom {
-                        width: self.rootwidth.clone() / 2,
+                        width: 2 * self.rootwidth.clone() / 3,
                         height: self.rootheight.clone(),
                         x: 0,
                         y: 0,
@@ -164,16 +167,16 @@ impl Layout for MasterSlave {
                 } else {
                     if i > 1 {
                         self.geoms.push(Geom {
-                            width: self.rootwidth.clone() / 2,
+                            width: self.rootwidth.clone() / 3,
                             height: self.rootheight.clone() / (len - 1),
-                            x: self.rootwidth.clone() / 2,
+                            x: 2 * self.rootwidth.clone() / 3,
                             y: self.geoms[i - 1].y + delta,
                         });
                     } else {
                         self.geoms.push(Geom {
-                            width: self.rootwidth.clone() / 2,
+                            width: 1 * self.rootwidth.clone() / 3,
                             height: self.rootheight.clone() / (len - 1),
-                            x: self.rootwidth.clone() / 2,
+                            x: 2 * self.rootwidth.clone() / 3,
                             y: 0,
                         })
                     }
@@ -182,23 +185,24 @@ impl Layout for MasterSlave {
         }
     }
     fn push(&mut self) {
+        println!("push");
         self.len += 1;
         self.reset();
     }
 
     fn pop(&mut self) {
+        println!("pop");
         self.len -= 1;
         self.reset();
     }
-    fn next_geom(&mut self) -> &Geom {
+    fn next_geom(&mut self) -> Geom {
         println!("cur: {:?}", *self);
         let mut cur = self.cur.clone();
+        self.cur += 1;
         if self.cur == self.len {
             self.cur = 0;
-            cur = self.cur.clone();
         }
-        self.cur += 1;
 
-        return self.geoms[cur].borrow();
+        return self.geoms[cur].clone();
     }
 }

@@ -1,23 +1,13 @@
+pub mod client;
+use x11rb::protocol::render::ConnectionExt;
 pub mod layout;
 pub mod wm;
 use crate::wm::*;
-use image::io::Reader as ImageReader;
-use keycode;
-use rgb::alt::BGRA8;
-use rgb::{self, AsPixels, ComponentBytes, ComponentSlice, FromSlice};
-use std::io::{Cursor, Write};
-use std::process;
-use std::thread::sleep_ms;
-use x11rb::atom_manager;
 use x11rb::connection::Connection;
-use x11rb::errors::{ReplyError, ReplyOrIdError};
-use x11rb::protocol::render::{self, ConnectionExt as _, PictType};
-use x11rb::protocol::xkb::ConnectionExt;
+use x11rb::errors::ReplyError;
+use x11rb::protocol::render::{self, PictType};
 
 use x11rb::protocol::xproto::*;
-use x11rb::protocol::xproto::{ConnectionExt as _, *};
-use x11rb::rust_connection::*;
-//use x11rb::xcb_ffi::XCBConnection;
 
 fn example_get_visual2<C: Connection>(
     conn: &C,

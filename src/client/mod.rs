@@ -2,16 +2,64 @@ use std::rc::Rc;
 
 use crate::layout::Geom;
 use x11rb::connection::Connection;
+use x11rb::protocol::render::{self, ConnectionExt as _, PictType};
 use x11rb::protocol::xproto::*;
 
 use x11rb::rust_connection::*;
+use x11rb::wrapper::ConnectionExt as Con;
 
+//choose 32 bit depth visual
+fn choose_visual(
+    conn: &Rc<impl Connection>,
+    screen_num: usize,
+) -> Result<(u8, Visualid), ReplyError> {
+    let depth = 32;
+    let screen = &conn.setup().roots[screen_num];
+
+    // Try to use XRender to find a visual with alpha support
+    let has_render = conn
+        .extension_information(x11rb::protocol::render::X11_EXTENSION_NAME)?
+        .is_some();
+    if has_render {
+        let formats = conn.render_query_pict_formats()?.reply()?;
+        // Find the ARGB32 format that must be supported.
+        let format = formats
+            .formats
+            .iter()
+            .filter(|info| {
+                (info.type_, info.depth) == (x11rb::protocol::render::PictType::DIRECT, depth)
+            })
+            .filter(|info| {
+                let d = info.direct;
+                println!("d: {:#?}", d);
+                (d.red_mask, d.green_mask, d.blue_mask, d.alpha_mask) == (0xff, 0xff, 0xff, 0xff)
+            })
+            .find(|info| {
+                let d = info.direct;
+                (d.red_shift, d.green_shift, d.blue_shift, d.alpha_shift) == (16, 8, 0, 24)
+            });
+        if let Some(format) = format {
+            // Now we need to find the visual that corresponds to this format
+            if let Some(visual) = formats.screens[screen_num]
+                .depths
+                .iter()
+                .flat_map(|d| &d.visuals)
+                .find(|v| v.format == format.id)
+            {
+                return Ok((format.depth, visual.visual));
+            }
+        }
+    }
+    Ok((screen.root_depth, screen.root_visual))
+}
+#[derive(Debug, Clone)]
 pub struct Client {
     conn: Option<Rc<RustConnection>>,
     pub frameid: Option<u32>,
     pub windowid: u32,
     x: u32,
     y: u32,
+    colormap: u32,
     frameheight: u32,
     framewidth: u32,
     screen: Option<Screen>,
@@ -30,6 +78,7 @@ impl Default for Client {
             conn: None,
             frameid: None,
             windowid: 0,
+            colormap: 0,
             //frame geometry initialized to zero before window gets mapped
             //could use option but it's easier to get values out this way
             x: 0,
@@ -70,6 +119,7 @@ impl Client {
             .unwrap()
             .reply()
             .unwrap();
+
         //created before wm -- we basically only frame windows that were present before the launch
         //of the WM if they are mapped and if they did not set override_redirect
         if created_before_wm
@@ -89,25 +139,120 @@ impl Client {
             .unwrap()
             .reply()
             .unwrap();
-        let winaux = CreateWindowAux::default()
-            .event_mask(EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT);
+
+        let (mydepth, myvisual) = choose_visual(self.conn.as_ref().unwrap(), 0).unwrap();
+        println!("depth: {} {}", windowgeom.depth, mydepth);
+        println!("visual: {} {}", window_attrs.visual, myvisual);
+        let atom = self
+            .conn
+            .as_ref()
+            .unwrap()
+            .intern_atom(false, b"_NET_WM_WINDOW_OPACITY")
+            .unwrap()
+            .reply()
+            .unwrap();
+        println!("atom: {:?}", atom);
         self.conn
             .as_ref()
-            .expect("Client has no valid X connection")
-            .create_window(
-                parent.root_depth,
-                frameid,
-                parent.root,
-                windowgeom.x,
-                windowgeom.x,
-                windowgeom.width,
-                windowgeom.height,
-                0,
-                window_attrs.class,
-                window_attrs.visual,
-                &winaux,
+            .unwrap()
+            .change_property32(
+                PropMode::REPLACE,
+                self.windowid,
+                atom.atom,
+                AtomEnum::CARDINAL,
+                &[0xffffffff as u32],
             )
-            .expect("Failed to create client window");
+            .unwrap()
+            .check()
+            .unwrap();
+
+        //get correct depth
+        //
+        /*
+        let mut d = 0 as u8;
+        for depth in self.screen.clone().unwrap().allowed_depths {
+            for visual in depth.visuals {
+                if visual.visual_id == (window_attrs.visual) {
+                    d = depth.depth;
+                    println!("depth: {}", d);
+                }
+            }
+        }
+        */
+
+        self.colormap = self.conn.as_ref().unwrap().generate_id().unwrap();
+        if windowgeom.depth == 24 {
+            self.conn
+                .as_ref()
+                .unwrap()
+                .create_colormap(
+                    ColormapAlloc::NONE,
+                    self.colormap,
+                    self.windowid,
+                    window_attrs.visual,
+                )
+                .unwrap()
+                .check()
+                .expect("FAILED to create colormap");
+        } else {
+            self.conn
+                .as_ref()
+                .unwrap()
+                .create_colormap(ColormapAlloc::NONE, self.colormap, self.windowid, myvisual)
+                .unwrap()
+                .check()
+                .expect("FAILED to create colormap");
+        }
+        let winaux = CreateWindowAux::new()
+            .event_mask(
+                EventMask::SUBSTRUCTURE_NOTIFY
+                    | EventMask::SUBSTRUCTURE_REDIRECT
+                    | EventMask::PROPERTY_CHANGE
+                    | EventMask::BUTTON_PRESS
+                    | EventMask::EXPOSURE
+                    | EventMask::ENTER_WINDOW
+                    | EventMask::COLOR_MAP_CHANGE,
+            )
+            .colormap(self.colormap.clone())
+            .border_pixel(0x0);
+
+        if windowgeom.depth == 24 {
+            self.conn
+                .as_ref()
+                .expect("Client has no valid X connection")
+                .create_window(
+                    windowgeom.depth,
+                    frameid,
+                    self.screen.clone().unwrap().root,
+                    windowgeom.x,
+                    windowgeom.x,
+                    windowgeom.width,
+                    windowgeom.height,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    window_attrs.visual,
+                    &winaux,
+                )
+                .expect("Failed to create client window");
+        } else {
+            self.conn
+                .as_ref()
+                .expect("Client has no valid X connection")
+                .create_window(
+                    mydepth,
+                    frameid,
+                    self.screen.clone().unwrap().root,
+                    windowgeom.x,
+                    windowgeom.x,
+                    windowgeom.width,
+                    windowgeom.height,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    myvisual,
+                    &winaux,
+                )
+                .expect("Failed to create client window");
+        }
         //add client window to save set in case WM crashes
         self.conn
             .as_ref()
@@ -160,17 +305,19 @@ impl Client {
             .expect("Failed to map window");
     }
     pub fn unframe(&mut self) {
-        self.conn
-            .as_ref()
-            .expect("Client has no valid X connection")
-            .unmap_window(self.frameid.unwrap())
-            .expect("Failed to unmap window");
-
+        if !self.mapped {
+            return;
+        }
         self.conn
             .as_ref()
             .expect("Client has no valid X connection")
             .reparent_window(self.windowid, self.screen.as_ref().unwrap().root, 0, 0)
             .expect("Failed to reparent window");
+        self.conn
+            .as_ref()
+            .expect("Client has no valid X connection")
+            .unmap_window(self.frameid.unwrap())
+            .expect("Failed to unmap window");
 
         //remove client window from SaveSetMode
         self.conn
@@ -204,6 +351,7 @@ impl Client {
             // we will ignore geometry config requests from the client unless window is in floating
             // mode. This is a dynamic window
             // manager after all
+
             aux = ConfigureWindowAux::from_configure_request(config)
                 .x(None)
                 .y(None)
@@ -219,6 +367,7 @@ impl Client {
         confnotify.height = self.frameheight as u16;
         confnotify.width = self.framewidth as u16;
         confnotify.response_type = CONFIGURE_NOTIFY_EVENT;
+
         if self.mapped {
             confnotify.above_sibling = self.frameid.unwrap();
         }
